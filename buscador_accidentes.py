@@ -97,17 +97,39 @@ def extract_info(text):
 def fetch_and_process_data():
     all_data = []
     # Ampliamos la búsqueda y forzamos el año 2023 en las queries
-    queries = [
-        "accidente transito fatal provincia de buenos aires 2023",
-        "choque ruta provincia de buenos aires 2023",
-        "choque múltiple panamericana 2023",
-        "accidente moto provincia de buenos aires 2023",
-        "choque fatal en avellaneda dos muertos inforegion 2023", # Ejemplo manual
-        "accidente fatal la plata 2023",
-        "choque fatal mar del plata 2023",
-        "accidente fatal quilmes 2023",
-        "siniestro vial pba 2023"
+    # Lista de medios locales/regionales de la Provincia de Buenos Aires
+    medios_pba = [
+        "eldia.com",          # La Plata
+        "infocielo.com",      # Provincial
+        "lanueva.com",        # Bahía Blanca
+        "lacapitalmdp.com",   # Mar del Plata
+        "inforegion.com.ar",  # Zona Sur GBA
+        "0223.com.ar",        # Mar del Plata
+        "elpopular.com.ar",   # Olavarría
+        "diarioepoca.com",    # General
+        "latecla.info",       # Provincial
+        "elmarplatense.com",  # Mar del Plata
+        "infobrisas.com",     # Mar del Plata
+        "zonanortediario.com.ar", # Zona Norte GBA
+        "pilaradiario.com",   # Pilar
+        "clarin.com",         # Nacional (sección zonal)
+        "lanacion.com.ar",    # Nacional
+        "infobae.com"         # Nacional
     ]
+
+    # Términos de búsqueda básicos
+    terminos = [
+        "choque fatal",
+        "accidente de tránsito muerto",
+        "siniestro vial fallecido"
+    ]
+
+    # Generamos combinaciones exhaustivas (Termino + Año + site:Medio)
+    queries = []
+    for medio in medios_pba:
+        for termino in terminos:
+            queries.append(f"{termino} 2023 site:{medio}")
+
     urls_seen = set()
 
 
@@ -118,6 +140,7 @@ def fetch_and_process_data():
                 # Usamos ddgs.text() que es más exhaustivo históricamente que ddgs.news()
                 # Pausa para evitar rate limits
                 time.sleep(2)
+
                 results = list(ddgs.text(q, max_results=20))
                 for r in results:
                     url = r.get('href')
@@ -142,21 +165,18 @@ def fetch_and_process_data():
                         continue
 
                     fecha = ''
-                    # Buscar fecha en el link
-                    match = re.search(r'2023/\d{2}/\d{2}', url)
+                    match = re.search(r'202[2-5]/\d{2}/\d{2}', url)
                     if match:
                         fecha = match.group(0).replace('/', '-')
-                    elif '2023' in url:
-                        fecha = '2023'
+                    elif r.get('date'):
+                        fecha = r.get('date')[:10]
 
-                    # Filtrar estrictamente por el año 2023
-                    if fecha and not fecha.startswith('2023'):
-                        continue
-                    if not fecha and '2023' not in text and '2023' not in url and '2023' not in r.get('body', ''):
+                    if fecha and '2023' not in fecha:
                         continue
 
-                    # If we still don't have a date but passed the filter, set it to 2023
                     if not fecha:
+                        if '2023' not in url and '2023' not in text:
+                            continue
                         fecha = '2023'
 
                     info = extract_info(text)
