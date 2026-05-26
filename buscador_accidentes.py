@@ -1,0 +1,179 @@
+# Para ejecutar este script, primero debes instalar las dependencias necesarias.
+# Puedes hacerlo ejecutando en tu terminal:
+# pip install pandas spacy duckduckgo-search newspaper3k lxml_html_clean
+# python -m spacy download es_core_news_sm
+#
+# Si estás en Jupyter Notebook o Google Colab, ejecuta esto en una celda:
+# !pip install pandas spacy duckduckgo-search newspaper3k lxml_html_clean
+# !python -m spacy download es_core_news_sm
+
+import pandas as pd
+import spacy
+from ddgs import DDGS
+from newspaper import Article
+import time
+import os
+import re
+try:
+    from IPython.display import display
+except ImportError:
+    display = print
+
+# Cargar modelo de NLP
+try:
+    nlp = spacy.load("es_core_news_sm")
+except OSError:
+    import subprocess
+    subprocess.run(["python", "-m", "spacy", "download", "es_core_news_sm"])
+    nlp = spacy.load("es_core_news_sm")
+
+def extract_info(text):
+    doc = nlp(text)
+
+    info = {
+        'Lugar': 'Provincia de Buenos Aires (no especificado)',
+        'Fallecidos': 'No',
+        'Heridos': 'No',
+        'Ilesos': 'No',
+        'Sexo': 'No especificado',
+        'Edad': 'No especificado',
+        'Tipo Via': 'No especificado',
+        'Vehiculos': []
+    }
+
+    # Extraer lugares con NER
+    lugares_encontrados = []
+    for ent in doc.ents:
+        if ent.label_ == "LOC":
+             if ent.text.lower() not in ["buenos aires", "provincia", "argentina", "pba", "provincia de buenos aires"]:
+                 lugares_encontrados.append(ent.text)
+
+    if lugares_encontrados:
+        info['Lugar'] = lugares_encontrados[0]
+
+    text_lower = text.lower()
+
+    # Palabras clave para condiciones
+    if any(word in text_lower for word in ['muerto', 'fallecid', 'víctima fatal', 'vida', 'mortal', 'muerte', 'falleció', 'murieron', 'víctimas']):
+         info['Fallecidos'] = 'Sí'
+    if any(word in text_lower for word in ['herid', 'lesionad', 'hospitalizad', 'hospital', 'politraumatismos']):
+         info['Heridos'] = 'Sí'
+    if any(word in text_lower for word in ['ileso', 'sin heridas', 'fuera de peligro', 'salvó su vida']):
+         info['Ilesos'] = 'Sí'
+
+    # Palabras clave para sexo
+    if any(word in text_lower for word in ['hombre', 'masculino', 'chico']):
+        info['Sexo'] = 'Masculino'
+    if any(word in text_lower for word in ['mujer', 'femenino', 'chica']):
+        if info['Sexo'] == 'Masculino':
+            info['Sexo'] = 'Ambos / Mixto'
+        else:
+             info['Sexo'] = 'Femenino'
+
+    # Palabras clave para tipo de vía
+    if 'ruta' in text_lower or 'rp' in text_lower or 'rn' in text_lower:
+        info['Tipo Via'] = 'Ruta'
+    elif 'autopista' in text_lower or 'panamericana' in text_lower or 'acceso' in text_lower:
+        info['Tipo Via'] = 'Autopista'
+    elif 'calle' in text_lower or 'avenida' in text_lower or 'esquina' in text_lower:
+        info['Tipo Via'] = 'Urbana'
+
+    # Palabras clave para vehículos
+    vehiculos = ['auto', 'automóvil', 'camión', 'moto', 'motocicleta', 'colectivo', 'bicicleta', 'camioneta', 'tren', 'micro', 'ómnibus', 'utilitario']
+    for v in vehiculos:
+         if re.search(r'\b' + re.escape(v) + r'\b', text_lower):
+              info['Vehiculos'].append(v)
+
+    # Extracción de edad básica
+    ages = re.findall(r'\b(\d{1,2})\s*años\b', text_lower)
+    if ages:
+         info['Edad'] = ", ".join(set(ages)) + " años"
+
+    return info
+
+def fetch_and_process_data():
+    all_data = []
+    # Ampliamos la búsqueda y forzamos el año 2023 en las queries
+    queries = [
+        "accidente transito fatal provincia de buenos aires 2023",
+        "choque ruta provincia de buenos aires 2023",
+        "accidente colectivo pba 2023",
+        "choque múltiple panamericana 2023",
+        "accidente moto provincia de buenos aires 2023"
+    ]
+    urls_seen = set()
+
+    with DDGS() as ddgs:
+        for q in queries:
+            try:
+                # timelimit='y' helps to find results in the past year, but we filter strictly below anyway
+                results = list(ddgs.news(q, max_results=20))
+                for r in results:
+                    url = r.get('url')
+                    if not url or url in urls_seen:
+                        continue
+                    urls_seen.add(url)
+
+                    try:
+                        article = Article(url)
+                        article.download()
+                        article.parse()
+                        text = article.text
+                        if not text:
+                            text = r.get('body', '') + " " + r.get('title', '')
+                    except Exception:
+                        text = r.get('body', '') + " " + r.get('title', '')
+
+                    if not text: continue
+
+                    fecha = r.get('date', '')[:10] if r.get('date') else ''
+
+                    # Filtrar estrictamente por el año 2023
+                    if fecha and not fecha.startswith('2023'):
+                        continue
+                    elif not fecha and '2023' not in text:
+                        continue
+
+                    info = extract_info(text)
+                    all_data.append({
+                        'Fecha': fecha,
+                        'Lugar': info['Lugar'],
+                        'Fallecidos': info['Fallecidos'],
+                        'Heridos': info['Heridos'],
+                        'Ilesos': info['Ilesos'],
+                        'Sexo': info['Sexo'],
+                        'Edad': info['Edad'],
+                        'Tipo Via': info['Tipo Via'],
+                        'Vehiculos Involucrados': ", ".join(info['Vehiculos']) if info['Vehiculos'] else "No especificado",
+                        'Titulo': r.get('title', ''),
+                        'Link': url
+                    })
+            except Exception as e:
+                print(f"Error buscando {q}: {e}")
+
+    return pd.DataFrame(all_data)
+
+if __name__ == "__main__":
+    print("Iniciando búsqueda y extracción de datos. Esto puede tardar unos minutos...")
+    df_accidentes = fetch_and_process_data()
+
+    if not df_accidentes.empty:
+        print(f"\n¡Completado! Se encontraron {len(df_accidentes)} noticias de accidentes de 2023.")
+
+        # Guardar a CSV en la ruta especificada
+        output_dir = r"D:\vial"
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            csv_filename = os.path.join(output_dir, 'accidentes_transito_pba_2023.csv')
+            df_accidentes.to_csv(csv_filename, index=False, encoding='utf-8-sig')
+            print(f"Datos guardados exitosamente en el archivo: {csv_filename}\n")
+        except OSError as e:
+            print(f"\nNo se pudo crear la ruta {output_dir}. Guardando en el directorio actual...")
+            csv_filename = 'accidentes_transito_pba_2023.csv'
+            df_accidentes.to_csv(csv_filename, index=False, encoding='utf-8-sig')
+            print(f"Datos guardados en el archivo: {csv_filename}\n")
+
+        # Mostrar primeras filas
+        display(df_accidentes.head(10))
+    else:
+        print("No se encontraron resultados para la búsqueda.")
