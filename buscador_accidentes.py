@@ -94,54 +94,42 @@ def extract_info(text):
     return info
 
 
-def fetch_and_process_data():
+def fetch_and_process_data(medio, año_fecha):
     all_data = []
-    # Ampliamos la búsqueda y forzamos el año 2023 en las queries
-    # Lista de medios locales/regionales de la Provincia de Buenos Aires
-    medios_pba = [
-        "eldia.com",          # La Plata
-        "infocielo.com",      # Provincial
-        "lanueva.com",        # Bahía Blanca
-        "lacapitalmdp.com",   # Mar del Plata
-        "inforegion.com.ar",  # Zona Sur GBA
-        "0223.com.ar",        # Mar del Plata
-        "elpopular.com.ar",   # Olavarría
-        "diarioepoca.com",    # General
-        "latecla.info",       # Provincial
-        "elmarplatense.com",  # Mar del Plata
-        "infobrisas.com",     # Mar del Plata
-        "zonanortediario.com.ar", # Zona Norte GBA
-        "pilaradiario.com",   # Pilar
-        "clarin.com",         # Nacional (sección zonal)
-        "lanacion.com.ar",    # Nacional
-        "infobae.com"         # Nacional
-    ]
 
     # Términos de búsqueda básicos
     terminos = [
         "choque fatal",
         "accidente de tránsito muerto",
-        "siniestro vial fallecido"
+        "siniestro vial fallecido",
+        "accidente colectivo",
+        "choque múltiple"
     ]
 
-    # Generamos combinaciones exhaustivas (Termino + Año + site:Medio)
+    # Construir las queries basadas en el input del usuario
     queries = []
-    for medio in medios_pba:
-        for termino in terminos:
-            queries.append(f"{termino} 2023 site:{medio}")
+    # Limpiamos el input del medio por si puso "https://www..." o similar
+    medio_limpio = medio.replace("https://", "").replace("http://", "").replace("www.", "").strip()
+    # Si medio_limpio tiene un '/' al final, se lo sacamos
+    if medio_limpio.endswith("/"):
+        medio_limpio = medio_limpio[:-1]
+
+    for termino in terminos:
+        if medio_limpio:
+            queries.append(f"{termino} {año_fecha} site:{medio_limpio}")
+        else:
+            # Si no puso medio, busca en general en la provincia
+            queries.append(f"{termino} {año_fecha} provincia de buenos aires")
 
     urls_seen = set()
-
 
     from duckduckgo_search import DDGS
     with DDGS() as ddgs:
         for q in queries:
             try:
-                # Usamos ddgs.text() que es más exhaustivo históricamente que ddgs.news()
                 # Pausa para evitar rate limits
                 time.sleep(2)
-
-                results = list(ddgs.text(q, max_results=20))
+                results = list(ddgs.text(q, max_results=15))
                 for r in results:
                     url = r.get('href')
                     if not url or url in urls_seen:
@@ -165,19 +153,24 @@ def fetch_and_process_data():
                         continue
 
                     fecha = ''
-                    match = re.search(r'202[2-5]/\d{2}/\d{2}', url)
+                    # Extraer el año que buscamos (ej. '2023' de '2023' o '2023-05' de '2023-05-21')
+                    año_str = str(año_fecha)[:4] if año_fecha else '2023'
+
+                    # Buscar fecha en el link (formato 2023/05/21 o 2023-05-21)
+                    match = re.search(r'202[2-5][/-]\d{2}[/-]\d{2}', url)
                     if match:
                         fecha = match.group(0).replace('/', '-')
                     elif r.get('date'):
                         fecha = r.get('date')[:10]
 
-                    if fecha and '2023' not in fecha:
+                    # Validacion de año
+                    if fecha and año_str not in fecha:
                         continue
 
                     if not fecha:
-                        if '2023' not in url and '2023' not in text:
+                        if año_str not in url and año_str not in text:
                             continue
-                        fecha = '2023'
+                        fecha = str(año_fecha)
 
                     info = extract_info(text)
                     all_data.append({
@@ -199,26 +192,44 @@ def fetch_and_process_data():
     return pd.DataFrame(all_data)
 
 if __name__ == "__main__":
-    print("Iniciando búsqueda y extracción de datos. Esto puede tardar unos minutos...")
-    df_accidentes = fetch_and_process_data()
+    print("="*60)
+    print("   Buscador Focalizado de Accidentes de Tránsito - PBA   ")
+    print("="*60)
+
+    print("\nPor favor, completa los siguientes datos (o presiona Enter para usar los valores por defecto).")
+
+    medio_input = input("1. Ingresa la página web del medio local (ej. inforegion.com.ar): ").strip()
+    anio_input = input("2. Ingresa el año o fecha a verificar (ej. 2023 o 2023-05-21) [Por defecto 2023]: ").strip()
+
+    if not anio_input:
+        anio_input = "2023"
+
+    print(f"\nIniciando búsqueda focalizada en '{medio_input or 'medios generales'}' para la fecha '{anio_input}'...")
+    print("Esto puede tardar unos minutos...")
+
+    df_accidentes = fetch_and_process_data(medio_input, anio_input)
 
     if not df_accidentes.empty:
-        print(f"\n¡Completado! Se encontraron {len(df_accidentes)} noticias de accidentes de 2023.")
+        print(f"\n¡Completado! Se encontraron {len(df_accidentes)} noticias de accidentes.")
 
         # Guardar a CSV en la ruta especificada
         output_dir = r"D:\vial"
+        medio_str = medio_input.replace(".", "_") if medio_input else "general"
+        archivo_nombre = f'accidentes_{medio_str}_{anio_input}.csv'
+
         try:
             os.makedirs(output_dir, exist_ok=True)
-            csv_filename = os.path.join(output_dir, 'accidentes_transito_pba_2023.csv')
+            csv_filename = os.path.join(output_dir, archivo_nombre)
             df_accidentes.to_csv(csv_filename, index=False, encoding='utf-8-sig')
             print(f"Datos guardados exitosamente en el archivo: {csv_filename}\n")
         except OSError as e:
             print(f"\nNo se pudo crear la ruta {output_dir}. Guardando en el directorio actual...")
-            csv_filename = 'accidentes_transito_pba_2023.csv'
+            csv_filename = archivo_nombre
             df_accidentes.to_csv(csv_filename, index=False, encoding='utf-8-sig')
             print(f"Datos guardados en el archivo: {csv_filename}\n")
 
         # Mostrar primeras filas
         display(df_accidentes.head(10))
     else:
-        print("No se encontraron resultados para la búsqueda.")
+        print("\nNo se encontraron resultados para la búsqueda.")
+        print("Intenta con un formato de fecha diferente o asegúrate de que el medio tenga la noticia indexada.")
