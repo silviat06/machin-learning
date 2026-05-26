@@ -1,6 +1,0 @@
-streamlit
-pandas
-spacy
-duckduckgo-search
-newspaper3k
-lxml_html_clean
