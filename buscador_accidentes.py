@@ -9,7 +9,7 @@
 
 import pandas as pd
 import spacy
-from ddgs import DDGS
+
 from newspaper import Article
 import time
 import os
@@ -26,6 +26,7 @@ except OSError:
     import subprocess
     subprocess.run(["python", "-m", "spacy", "download", "es_core_news_sm"])
     nlp = spacy.load("es_core_news_sm")
+
 
 def extract_info(text):
     doc = nlp(text)
@@ -79,7 +80,8 @@ def extract_info(text):
         info['Tipo Via'] = 'Urbana'
 
     # Palabras clave para vehículos
-    vehiculos = ['auto', 'automóvil', 'camión', 'moto', 'motocicleta', 'colectivo', 'bicicleta', 'camioneta', 'tren', 'micro', 'ómnibus', 'utilitario']
+    vehiculos = ['auto', 'automóvil', 'camión', 'moto', 'motocicleta', 'colectivo',
+        'bicicleta', 'camioneta', 'tren', 'micro', 'ómnibus', 'utilitario']
     for v in vehiculos:
          if re.search(r'\b' + re.escape(v) + r'\b', text_lower):
               info['Vehiculos'].append(v)
@@ -91,25 +93,34 @@ def extract_info(text):
 
     return info
 
+
 def fetch_and_process_data():
     all_data = []
     # Ampliamos la búsqueda y forzamos el año 2023 en las queries
     queries = [
         "accidente transito fatal provincia de buenos aires 2023",
         "choque ruta provincia de buenos aires 2023",
-        "accidente colectivo pba 2023",
         "choque múltiple panamericana 2023",
-        "accidente moto provincia de buenos aires 2023"
+        "accidente moto provincia de buenos aires 2023",
+        "choque fatal en avellaneda dos muertos inforegion 2023", # Ejemplo manual
+        "accidente fatal la plata 2023",
+        "choque fatal mar del plata 2023",
+        "accidente fatal quilmes 2023",
+        "siniestro vial pba 2023"
     ]
     urls_seen = set()
 
+
+    from duckduckgo_search import DDGS
     with DDGS() as ddgs:
         for q in queries:
             try:
-                # timelimit='y' helps to find results in the past year, but we filter strictly below anyway
-                results = list(ddgs.news(q, max_results=20))
+                # Usamos ddgs.text() que es más exhaustivo históricamente que ddgs.news()
+                # Pausa para evitar rate limits
+                time.sleep(2)
+                results = list(ddgs.text(q, max_results=20))
                 for r in results:
-                    url = r.get('url')
+                    url = r.get('href')
                     if not url or url in urls_seen:
                         continue
                     urls_seen.add(url)
@@ -119,20 +130,34 @@ def fetch_and_process_data():
                         article.download()
                         article.parse()
                         text = article.text
+                        title = article.title
+
                         if not text:
                             text = r.get('body', '') + " " + r.get('title', '')
                     except Exception:
                         text = r.get('body', '') + " " + r.get('title', '')
+                        title = r.get('title', '')
 
-                    if not text: continue
+                    if not text:
+                        continue
 
-                    fecha = r.get('date', '')[:10] if r.get('date') else ''
+                    fecha = ''
+                    # Buscar fecha en el link
+                    match = re.search(r'2023/\d{2}/\d{2}', url)
+                    if match:
+                        fecha = match.group(0).replace('/', '-')
+                    elif '2023' in url:
+                        fecha = '2023'
 
                     # Filtrar estrictamente por el año 2023
                     if fecha and not fecha.startswith('2023'):
                         continue
-                    elif not fecha and '2023' not in text:
+                    if not fecha and '2023' not in text and '2023' not in url and '2023' not in r.get('body', ''):
                         continue
+
+                    # If we still don't have a date but passed the filter, set it to 2023
+                    if not fecha:
+                        fecha = '2023'
 
                     info = extract_info(text)
                     all_data.append({
@@ -145,7 +170,7 @@ def fetch_and_process_data():
                         'Edad': info['Edad'],
                         'Tipo Via': info['Tipo Via'],
                         'Vehiculos Involucrados': ", ".join(info['Vehiculos']) if info['Vehiculos'] else "No especificado",
-                        'Titulo': r.get('title', ''),
+                        'Titulo': title,
                         'Link': url
                     })
             except Exception as e:
