@@ -96,8 +96,43 @@ def extract_info(text):
 
 def fetch_and_process_data(medio, año_fecha):
     all_data = []
+    urls_seen = set()
+    medio_limpio = medio.replace("https://", "").replace("http://", "").replace("www.", "").strip()
+    if medio_limpio.endswith("/"):
+        medio_limpio = medio_limpio[:-1]
 
-    # Términos de búsqueda básicos
+    # Estrategia 1: Scraping directo de tags internos (muy efectivo para diarios locales como 0221, inforegion, etc)
+    if medio_limpio:
+        print("\n[Estrategia 1] Intentando recuperar noticias desde secciones y etiquetas internas del medio...")
+        secciones = [
+            "/tag/accidentes-de-transito", "/tag/accidente", "/tag/choque", "/tag/siniestro-vial",
+            "/seccion/policiales", "/policiales", "/categoria/policiales"
+        ]
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+        for sec in secciones:
+            url_seccion = f"https://www.{medio_limpio}{sec}"
+            try:
+                import requests
+                from bs4 import BeautifulSoup
+                res = requests.get(url_seccion, headers=headers, timeout=5)
+                if res.status_code == 200:
+                    soup = BeautifulSoup(res.text, 'html.parser')
+                    # Extraer links que parezcan noticias
+                    for a in soup.find_all('a', href=True):
+                        href = a['href']
+                        if 'javascript' in href or '#' in href or '/tag/' in href: continue
+                        if not href.startswith('http'):
+                            href = f"https://www.{medio_limpio}" + href if href.startswith('/') else f"https://www.{medio_limpio}/{href}"
+
+                        # Filtro simple para que parezca una noticia (tiene guiones y es largo)
+                        if '-' in href and len(href) > 35 and href not in urls_seen and medio_limpio in href:
+                            urls_seen.add(href)
+            except Exception:
+                pass
+
+    # Estrategia 2: Búsqueda vía motor global (DuckDuckGo Text)
+    print("\n[Estrategia 2] Buscando vía motor web global (DuckDuckGo)...")
     terminos = [
         "choque fatal",
         "accidente de tránsito muerto",
@@ -106,88 +141,87 @@ def fetch_and_process_data(medio, año_fecha):
         "choque múltiple"
     ]
 
-    # Construir las queries basadas en el input del usuario
     queries = []
-    # Limpiamos el input del medio por si puso "https://www..." o similar
-    medio_limpio = medio.replace("https://", "").replace("http://", "").replace("www.", "").strip()
-    # Si medio_limpio tiene un '/' al final, se lo sacamos
-    if medio_limpio.endswith("/"):
-        medio_limpio = medio_limpio[:-1]
-
     for termino in terminos:
         if medio_limpio:
             queries.append(f"{termino} {año_fecha} site:{medio_limpio}")
         else:
-            # Si no puso medio, busca en general en la provincia
             queries.append(f"{termino} {año_fecha} provincia de buenos aires")
 
-    urls_seen = set()
-
     from duckduckgo_search import DDGS
-    with DDGS() as ddgs:
-        for q in queries:
-            try:
-                # Pausa para evitar rate limits
-                time.sleep(2)
-                results = list(ddgs.text(q, max_results=15))
-                for r in results:
-                    url = r.get('href')
-                    if not url or url in urls_seen:
-                        continue
-                    urls_seen.add(url)
+    try:
+        with DDGS() as ddgs:
+            for q in queries:
+                try:
+                    time.sleep(2)
+                    results = list(ddgs.text(q, max_results=10))
+                    for r in results:
+                        url = r.get('href')
+                        if url and url not in urls_seen:
+                            urls_seen.add(url)
+                except Exception as e:
+                    pass
+    except Exception as e:
+        print("Aviso: El motor global rechazó la conexión. Se usarán únicamente los enlaces internos recuperados.")
 
-                    try:
-                        article = Article(url)
-                        article.download()
-                        article.parse()
-                        text = article.text
-                        title = article.title
+    print(f"\nSe recolectaron {len(urls_seen)} enlaces crudos para analizar. Procesando...")
 
-                        if not text:
-                            text = r.get('body', '') + " " + r.get('title', '')
-                    except Exception:
-                        text = r.get('body', '') + " " + r.get('title', '')
-                        title = r.get('title', '')
+    # Procesar todos los URLs encontrados (internos y externos)
+    for url in list(urls_seen): # No limit para no colgar la máquina
+        try:
+            from newspaper import Config
+            config = Config()
+            config.browser_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+            config.request_timeout = 10
 
-                    if not text:
-                        continue
+            article = Article(url, config=config)
+            article.download()
+            article.parse()
+            text = article.text
+            title = article.title
 
-                    fecha = ''
-                    # Extraer el año que buscamos (ej. '2023' de '2023' o '2023-05' de '2023-05-21')
-                    año_str = str(año_fecha)[:4] if año_fecha else '2023'
+            if not text:
+                continue
 
-                    # Buscar fecha en el link (formato 2023/05/21 o 2023-05-21)
-                    match = re.search(r'202[2-5][/-]\d{2}[/-]\d{2}', url)
-                    if match:
-                        fecha = match.group(0).replace('/', '-')
-                    elif r.get('date'):
-                        fecha = r.get('date')[:10]
 
-                    # Validacion de año
-                    if fecha and año_str not in fecha:
-                        continue
+            fecha = ''
+            año_str = str(año_fecha)[:4] if año_fecha else '2023'
 
-                    if not fecha:
-                        if año_str not in url and año_str not in text:
-                            continue
-                        fecha = str(año_fecha)
+            match = re.search(r'202[2-5][/-]\d{2}[/-]\d{2}', url)
+            if match:
+                fecha = match.group(0).replace('/', '-')
+            elif article.publish_date:
+                fecha = str(article.publish_date)[:10]
 
-                    info = extract_info(text)
-                    all_data.append({
-                        'Fecha': fecha,
-                        'Lugar': info['Lugar'],
-                        'Fallecidos': info['Fallecidos'],
-                        'Heridos': info['Heridos'],
-                        'Ilesos': info['Ilesos'],
-                        'Sexo': info['Sexo'],
-                        'Edad': info['Edad'],
-                        'Tipo Via': info['Tipo Via'],
-                        'Vehiculos Involucrados': ", ".join(info['Vehiculos']) if info['Vehiculos'] else "No especificado",
-                        'Titulo': title,
-                        'Link': url
-                    })
-            except Exception as e:
-                print(f"Error buscando {q}: {e}")
+            # Filter strictly by the requested year if a date was found
+            if fecha and año_str not in fecha:
+                continue
+
+            # If no date was found in the URL or article metadata, look for the year in the body text.
+            # If it's not there either, we discard the article to guarantee no contamination from other years.
+            if not fecha:
+                if año_str not in text and año_str not in url:
+                    continue
+                fecha = str(año_fecha)
+
+
+            info = extract_info(text)
+            all_data.append({
+                'Fecha': fecha,
+                'Lugar': info['Lugar'],
+                'Fallecidos': info['Fallecidos'],
+                'Heridos': info['Heridos'],
+                'Ilesos': info['Ilesos'],
+                'Sexo': info['Sexo'],
+                'Edad': info['Edad'],
+                'Tipo Via': info['Tipo Via'],
+                'Vehiculos Involucrados': ", ".join(info['Vehiculos']) if info['Vehiculos'] else "No especificado",
+                'Titulo': title,
+                'Link': url
+            })
+        except Exception as e:
+            print('Error en articulo:', e)
+            pass
 
     return pd.DataFrame(all_data)
 
